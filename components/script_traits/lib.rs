@@ -248,8 +248,9 @@ pub enum ConstellationControlMsg {
     /// The strings are key, old value and new value.
     DispatchStorageEvent(PipelineId, StorageType, ServoUrl, Option<String>, Option<String>, Option<String>),
     /// Notifies a parent pipeline that one of its child frames is now active.
-    /// PipelineId is for the parent, FrameId is the child frame.
-    FramedContentChanged(PipelineId, FrameId),
+    /// First PipelineId is for the parent, second PipelineId is for the new active pipeline,
+    /// FrameId is the child frame.
+    FramedContentChanged(PipelineId, PipelineId, FrameId),
     /// Report an error from a CSS parser for the given pipeline
     ReportCSSError(PipelineId, String, usize, usize, String),
     /// Reload the given page.
@@ -497,7 +498,7 @@ pub struct IFrameLoadInfo {
     /// The ID for this iframe.
     pub frame_id: FrameId,
     /// The new pipeline ID that the iframe has generated.
-    pub new_pipeline_id: PipelineId,
+    pub pipeline_id: PipelineId,
     ///  Whether this iframe should be considered private
     pub is_private: bool,
     /// Whether this iframe is a mozbrowser iframe
@@ -514,8 +515,6 @@ pub struct IFrameLoadInfoWithData {
     pub info: IFrameLoadInfo,
     /// Load data containing the url to load
     pub load_data: Option<LoadData>,
-    /// The old pipeline ID for this iframe, if a page was previously loaded.
-    pub old_pipeline_id: Option<PipelineId>,
     /// Sandbox type of this iframe
     pub sandbox: IFrameSandboxState,
 }

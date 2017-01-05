@@ -112,12 +112,10 @@ impl HTMLIFrameElement {
         }).unwrap_or_else(|| ServoUrl::parse("about:blank").unwrap())
     }
 
-    pub fn generate_new_pipeline_id(&self) -> (Option<PipelineId>, PipelineId) {
-        let old_pipeline_id = self.pipeline_id.get();
+    pub fn generate_new_pipeline_id(&self) -> PipelineId {
         let new_pipeline_id = PipelineId::new();
-        self.pipeline_id.set(Some(new_pipeline_id));
         debug!("Frame {} created pipeline {}.", self.frame_id, new_pipeline_id);
-        (old_pipeline_id, new_pipeline_id)
+        new_pipeline_id
     }
 
     pub fn navigate_or_reload_child_browsing_context(&self, load_data: Option<LoadData>, nav_type: NavigationType) {
@@ -142,7 +140,7 @@ impl HTMLIFrameElement {
         }
 
         let window = window_from_node(self);
-        let (old_pipeline_id, new_pipeline_id) = self.generate_new_pipeline_id();
+        let new_pipeline_id = self.generate_new_pipeline_id();
         let private_iframe = self.privatebrowsing();
         let frame_type = if self.Mozbrowser() { FrameType::MozBrowserIFrame } else { FrameType::IFrame };
 
@@ -150,7 +148,7 @@ impl HTMLIFrameElement {
         let load_info = IFrameLoadInfo {
             parent_pipeline_id: global_scope.pipeline_id(),
             frame_id: self.frame_id,
-            new_pipeline_id: new_pipeline_id,
+            pipeline_id: new_pipeline_id,
             is_private: private_iframe,
             frame_type: frame_type,
             replace: nav_type == NavigationType::Replace,
@@ -182,7 +180,6 @@ impl HTMLIFrameElement {
                 let load_info = IFrameLoadInfoWithData {
                     info: load_info,
                     load_data: load_data,
-                    old_pipeline_id: old_pipeline_id,
                     sandbox: sandboxed,
                 };
                 global_scope
