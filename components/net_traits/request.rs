@@ -6,10 +6,9 @@ use ReferrerPolicy;
 use hyper::header::Headers;
 use hyper::method::Method;
 use msg::constellation_msg::PipelineId;
-use servo_url::ServoUrl;
+use servo_url::{Origin as UrlOrigin, ServoUrl};
 use std::cell::{Cell, RefCell};
 use std::default::Default;
-use url::Origin as UrlOrigin;
 
 /// An [initiator](https://fetch.spec.whatwg.org/#concept-request-initiator)
 #[derive(Copy, Clone, PartialEq, HeapSizeOf)]

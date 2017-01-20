@@ -104,7 +104,6 @@ use net_traits::CoreResourceMsg::{GetCookiesForUrl, SetCookiesForUrl};
 use net_traits::request::RequestInit;
 use net_traits::response::HttpsState;
 use num_traits::ToPrimitive;
-use origin::Origin;
 use script_layout_interface::message::{Msg, ReflowQueryType};
 use script_runtime::{CommonScriptMsg, ScriptThreadEventCategory};
 use script_thread::{MainThreadScriptMsg, Runnable};
@@ -114,7 +113,7 @@ use script_traits::{TouchEventType, TouchId};
 use script_traits::UntrustedNodeAddress;
 use servo_atoms::Atom;
 use servo_config::prefs::PREFS;
-use servo_url::ServoUrl;
+use servo_url::{ServoOrigin, ServoUrl};
 use std::ascii::AsciiExt;
 use std::borrow::ToOwned;
 use std::cell::{Cell, Ref, RefMut};
@@ -276,7 +275,7 @@ pub struct Document {
     https_state: Cell<HttpsState>,
     touchpad_pressure_phase: Cell<TouchpadPressurePhase>,
     /// The document's origin.
-    origin: Origin,
+    origin: ServoOrigin,
     ///  https://w3c.github.io/webappsec-referrer-policy/#referrer-policy-states
     referrer_policy: Cell<Option<ReferrerPolicy>>,
     /// https://html.spec.whatwg.org/multipage/#dom-document-referrer
@@ -400,7 +399,7 @@ impl Document {
         self.is_fully_active.set(false)
     }
 
-    pub fn origin(&self) -> &Origin {
+    pub fn origin(&self) -> &ServoOrigin {
         &self.origin
     }
 
@@ -1884,7 +1883,7 @@ impl Document {
     pub fn new_inherited(window: &Window,
                          browsing_context: Option<&BrowsingContext>,
                          url: Option<ServoUrl>,
-                         origin: Origin,
+                         origin: ServoOrigin,
                          is_html_document: IsHTMLDocument,
                          content_type: Option<DOMString>,
                          last_modified: Option<String>,
@@ -2000,7 +1999,7 @@ impl Document {
     pub fn new(window: &Window,
                browsing_context: Option<&BrowsingContext>,
                url: Option<ServoUrl>,
-               origin: Origin,
+               origin: ServoOrigin,
                doctype: IsHTMLDocument,
                content_type: Option<DOMString>,
                last_modified: Option<String>,
@@ -2085,7 +2084,7 @@ impl Document {
                                         None,
                                         None,
                                         // https://github.com/whatwg/html/issues/2109
-                                        Origin::opaque_identifier(),
+                                        ServoOrigin::opaque_identifier(),
                                         doctype,
                                         None,
                                         None,

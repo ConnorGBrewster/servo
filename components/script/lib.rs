@@ -109,7 +109,6 @@ pub mod fetch;
 pub mod layout_wrapper;
 mod mem;
 mod network_listener;
-pub mod origin;
 pub mod script_runtime;
 #[allow(unsafe_code)]
 pub mod script_thread;

@@ -37,7 +37,7 @@ use net_traits::response::{HttpsState, Response, ResponseBody, ResponseType};
 use openssl;
 use openssl::ssl::error::{OpensslError, SslError};
 use resource_thread::AuthCache;
-use servo_url::ServoUrl;
+use servo_url::{Origin as UrlOrigin, ServoUrl};
 use std::collections::HashSet;
 use std::error::Error;
 use std::io::{self, Read, Write};
@@ -51,7 +51,6 @@ use std::thread;
 use time;
 use time::Tm;
 use unicase::UniCase;
-use url::Origin as UrlOrigin;
 use uuid;
 
 fn read_block<R: Read>(reader: &mut R) -> Result<Data, ()> {
