@@ -18,25 +18,23 @@ use std::time::Instant;
 /// chronologically, the future is sorted reverse chronologically:
 /// in particular prev.pop() is the latest past entry, and
 /// next.pop() is the earliest future entry.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Frame {
     /// The frame id.
     pub id: FrameId,
 
-    /// The timestamp for the current session history entry
-    pub instant: Instant,
-
     /// The pipeline for the current session history entry
     pub pipeline_id: PipelineId,
 
-    /// The URL for the current session history entry
-    pub url: ServoUrl,
+    /// The currently active group of entries. All entries that share the same pipeline represent
+    /// a group.
+    current_group: FrameStateEntries,
 
-    /// The past session history, ordered chronologically.
-    pub prev: Vec<FrameState>,
+    /// The past session history, ordered chronologically grouped by pipelines.
+    pub past: Vec<FrameStateGroup>,
 
-    /// The future session history, ordered reverse chronologically.
-    pub next: Vec<FrameState>,
+    /// The future session history, ordered reverse chronologically grouped by pipelines.
+    pub future: Vec<FrameStateGroup>,
 }
 
 impl Frame {
@@ -46,47 +44,228 @@ impl Frame {
         Frame {
             id: id,
             pipeline_id: pipeline_id,
-            instant: Instant::now(),
-            url: url,
-            prev: vec!(),
-            next: vec!(),
-        }
-    }
-
-    /// Get the current frame state.
-    pub fn current(&self) -> FrameState {
-        FrameState {
-            instant: self.instant,
-            frame_id: self.id,
-            pipeline_id: Some(self.pipeline_id),
-            url: self.url.clone(),
+            current_group: FrameStateEntries::new(url),
+            past: vec!(),
+            future: vec!(),
         }
     }
 
     /// Set the current frame entry, and push the current frame entry into the past.
     pub fn load(&mut self, pipeline_id: PipelineId, url: ServoUrl) {
-        let current = self.current();
-        self.prev.push(current);
-        self.instant = Instant::now();
+        let old_entries = replace(&mut self.current_group, FrameStateEntries::new(url));
+        self.past.push(FrameStateGroup {
+            pipeline_id: Some(self.pipeline_id),
+            frame_id: self.id,
+            entries: old_entries,
+        });
         self.pipeline_id = pipeline_id;
-        self.url = url;
     }
 
     /// Set the future to be empty.
-    pub fn remove_forward_entries(&mut self) -> Vec<FrameState> {
-        replace(&mut self.next, vec!())
+    pub fn remove_forward_entries(&mut self) -> Vec<FrameStateGroup> {
+        replace(&mut self.future, vec!())
     }
 
-    /// Update the current entry of the Frame from an entry that has been traversed to.
-    pub fn update_current(&mut self, pipeline_id: PipelineId, entry: &FrameState) {
+    pub fn current(&self) -> HistoryEntry {
+        HistoryEntry {
+            pipeline_id: Some(self.pipeline_id),
+            frame_id: self.id,
+            url: self.current_group.current.url.clone(),
+            instant: self.current_group.current.instant,
+        }
+    }
+
+    pub fn instant(&self) -> Instant {
+        self.current_group.current.instant
+    }
+
+    pub fn traverse_to_entry(&mut self, entry: HistoryEntry, pipeline_id: PipelineId) {
+        let mut current_pipeline = Some(self.pipeline_id);
+        if entry.instant > self.instant() {
+            // Traversing the future
+            loop {
+                if self.current_group.traverse_to_entry(&entry) {
+                    break;
+                }
+                match self.future.pop() {
+                    Some(next) => {
+                        // The current index does not matter as it will be search for in the next
+                        // iteration.
+                        let old_entries = replace(&mut self.current_group, next.entries);
+                        self.past.push(FrameStateGroup {
+                            pipeline_id: current_pipeline,
+                            frame_id: self.id,
+                            entries: old_entries,
+                        });
+                        current_pipeline = next.pipeline_id;
+                    },
+                    None => break,
+                }
+            }
+        } else if entry.instant < self.instant() {
+            // Traversing the past
+            loop {
+                if self.current_group.traverse_to_entry(&entry) {
+                    break;
+                }
+                match self.past.pop() {
+                    Some(prev) => {
+                        // The current index does not matter as it will be search for in the next
+                        // iteration.
+                        let old_entries = replace(&mut self.current_group, prev.entries);
+                        self.future.push(FrameStateGroup {
+                            pipeline_id: current_pipeline,
+                            frame_id: self.id,
+                            entries: old_entries,
+                        });
+                        current_pipeline = prev.pipeline_id;
+                    },
+                    None => break,
+                }
+            }
+        }
+
+        debug_assert_eq!(self.instant(), entry.instant);
+
         self.pipeline_id = pipeline_id;
-        self.instant = entry.instant;
-        self.url = entry.url.clone();
+    }
+
+    pub fn future_iter<'a>(&'a self) -> impl Iterator<Item=HistoryEntry> + 'a {
+        self.current_group.future.iter().map(move |entry| {
+            HistoryEntry {
+                pipeline_id: Some(self.pipeline_id),
+                frame_id: self.id,
+                instant: entry.instant,
+                url: entry.url.clone()
+            }
+        }).chain(self.future.iter().flat_map(|group| {
+            group.entries.past.iter().chain(once(&group.entries.current))
+                .chain(group.entries.future.iter()).map(move |entry| {
+                    HistoryEntry {
+                        pipeline_id: group.pipeline_id,
+                        frame_id: group.frame_id,
+                        instant: entry.instant,
+                        url: entry.url.clone()
+                    }
+                })
+        }))
+    }
+
+    pub fn past_iter<'a>(&'a self) -> impl Iterator<Item=HistoryEntry> + 'a {
+        self.current_group.past.iter().rev().map(move |entry| {
+            HistoryEntry {
+                pipeline_id: Some(self.pipeline_id),
+                frame_id: self.id,
+                instant: entry.instant,
+                url: entry.url.clone()
+            }
+        }).chain(self.past.iter().rev().flat_map(|group| {
+            group.entries.past.iter().chain(once(&group.entries.current))
+                .chain(group.entries.future.iter()).map(move |entry| {
+                    HistoryEntry {
+                        pipeline_id: group.pipeline_id,
+                        frame_id: group.frame_id,
+                        instant: entry.instant,
+                        url: entry.url.clone()
+                    }
+            })
+        }))
+    }
+}
+
+/// A representation of a session history entry. This just aggregates all the data needed
+/// when the constellation is handling traversal, but it does not represent how a history
+/// entry is actually stored.
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    /// The pipeline of this entry.
+    pub pipeline_id: Option<PipelineId>,
+
+    /// The frame that owns this entry.
+    pub frame_id: FrameId,
+
+    /// The timestamp when this entry was added to the session history.
+    pub instant: Instant,
+
+    /// The url of this entry.
+    pub url: ServoUrl,
+}
+
+/// A group of consecutive entries in the session history that share a pipeline id.
+#[derive(Debug)]
+pub struct FrameStateGroup {
+    /// The pipeline for these entries in the session history,
+    /// None if the pipeline has been discarded
+    pub pipeline_id: Option<PipelineId>,
+
+    /// The frame that this session history entry group is part of
+    pub frame_id: FrameId,
+
+    /// The history entries that share this pipeline.
+    entries: FrameStateEntries,
+}
+
+/// A group of entries that share a pipeline id and are traversable. This is only used for the
+/// active group on a `Frame` as an inactive group has no concept of a currently active entry or
+/// sets of future and past entries.
+#[derive(Debug)]
+struct FrameStateEntries {
+    /// The index of the currently active entry
+    current: FrameState,
+
+    /// The past entries.
+    past: Vec<FrameState>,
+
+    /// The future entries.
+    future: Vec<FrameState>,
+}
+
+impl FrameStateEntries {
+    /// Traverses to the given entry.
+    fn traverse_to_entry(&mut self, entry: &HistoryEntry) -> bool {
+        use std::cmp::Ordering;
+
+        match entry.instant.cmp(&self.current.instant) {
+            Ordering::Equal => return true,
+            Ordering::Less => {
+                // Traversing the past
+                while let Some(prev) = self.past.pop() {
+                    let old = replace(&mut self.current, prev);
+                    self.future.push(old);
+                    if self.current.instant <= entry.instant {
+                        return true;
+                    }
+                }
+            },
+            Ordering::Greater => {
+                // Traversing the future
+                while let Some(next) = self.future.pop() {
+                    let old = replace(&mut self.current, next);
+                    self.past.push(old);
+                    if self.current.instant >= entry.instant {
+                        return true;
+                    }
+                }
+            },
+        }
+        false
+    }
+}
+
+impl FrameStateEntries {
+    fn new(url: ServoUrl) -> FrameStateEntries {
+        FrameStateEntries {
+            current: FrameState {
+                instant: Instant::now(),
+                url: url,
+            },
+            past: vec!(),
+            future: vec!(),
+        }
     }
 }
 
 /// An entry in a frame's session history.
-/// Each entry stores the pipeline id for a document in the session history.
 ///
 /// When we operate on the joint session history, entries are sorted chronologically,
 /// so we timestamp the entries by when the entry was added to the session history.
@@ -95,24 +274,8 @@ pub struct FrameState {
     /// The timestamp for when the session history entry was created
     pub instant: Instant,
 
-    /// The pipeline for the document in the session history,
-    /// None if the entry has been discarded
-    pub pipeline_id: Option<PipelineId>,
-
     /// The URL for this entry, used to reload the pipeline if it has been discarded
     pub url: ServoUrl,
-
-    /// The frame that this session history entry is part of
-    pub frame_id: FrameId,
-}
-
-impl FrameState {
-    /// Updates the entry's pipeline and url. This is used when navigating with replacement
-    /// enabled.
-    pub fn replace_pipeline(&mut self, pipeline_id: PipelineId, url: ServoUrl) {
-        self.pipeline_id = Some(pipeline_id);
-        self.url = url;
-    }
 }
 
 /// Represents a pending change in the frame tree, that will be applied
@@ -133,7 +296,7 @@ pub struct FrameChange {
 
     /// Is the new document replacing the current document (e.g. a reload)
     /// or pushing it into the session history (e.g. a navigation)?
-    pub replace: Option<FrameState>,
+    pub replace: Option<HistoryEntry>,
 }
 
 /// An iterator over a frame tree, returning the fully active frames in
@@ -213,7 +376,7 @@ impl<'a> Iterator for FullFrameTreeIterator<'a> {
                     continue;
                 },
             };
-            let child_frame_ids = frame.prev.iter().chain(frame.next.iter())
+            let child_frame_ids = frame.past.iter().chain(frame.future.iter())
                 .filter_map(|entry| entry.pipeline_id)
                 .chain(once(frame.pipeline_id))
                 .filter_map(|pipeline_id| pipelines.get(&pipeline_id))

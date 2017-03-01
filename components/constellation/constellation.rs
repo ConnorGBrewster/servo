@@ -75,7 +75,7 @@ use devtools_traits::{ChromeToDevtoolsControlMsg, DevtoolsControlMsg};
 use euclid::scale_factor::ScaleFactor;
 use euclid::size::{Size2D, TypedSize2D};
 use event_loop::EventLoop;
-use frame::{Frame, FrameChange, FrameState, FrameTreeIterator, FullFrameTreeIterator};
+use frame::{Frame, FrameChange, HistoryEntry, FrameTreeIterator, FullFrameTreeIterator};
 use gfx::font_cache_thread::FontCacheThread;
 use gfx_traits::Epoch;
 use ipc_channel::{Error as IpcError};
@@ -706,9 +706,9 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
 
     /// The joint session future is the merge of the session future of every
     /// frame in the frame tree, sorted chronologically.
-    fn joint_session_future<'a>(&'a self, frame_id_root: FrameId) -> impl Iterator<Item=FrameState> {
-        let mut future: Vec<FrameState> = self.full_frame_tree_iter(frame_id_root)
-            .flat_map(|frame| frame.next.iter().cloned())
+    fn joint_session_future<'a>(&'a self, frame_id_root: FrameId) -> impl Iterator<Item=HistoryEntry> {
+        let mut future: Vec<HistoryEntry> = self.full_frame_tree_iter(frame_id_root)
+            .flat_map(|frame| frame.future_iter())
             .collect();
 
         // Sort the joint session future by the timestamp that the pipeline was navigated to
@@ -720,17 +720,17 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
     /// Is the joint session future empty?
     fn joint_session_future_is_empty(&self, frame_id_root: FrameId) -> bool {
         self.full_frame_tree_iter(frame_id_root)
-            .all(|frame| frame.next.is_empty())
+            .all(|frame| frame.future.is_empty())
     }
 
     /// The joint session past is the merge of the session past of every
     /// frame in the frame tree, sorted reverse chronologically.
-    fn joint_session_past<'a>(&self, frame_id_root: FrameId) -> impl Iterator<Item=FrameState> {
-        let mut past: Vec<(Instant, FrameState)> = self.full_frame_tree_iter(frame_id_root)
-            .flat_map(|frame| frame.prev.iter().rev().scan(frame.instant, |prev_instant, entry| {
+    fn joint_session_past<'a>(&self, frame_id_root: FrameId) -> impl Iterator<Item=HistoryEntry> {
+        let mut past: Vec<(Instant, HistoryEntry)> = self.full_frame_tree_iter(frame_id_root)
+            .flat_map(|frame| frame.past_iter().scan(frame.instant(), |prev_instant, entry| {
                 let instant = *prev_instant;
                 *prev_instant = entry.instant;
-                Some((instant, entry.clone()))
+                Some((instant, entry))
             }))
             .collect();
 
@@ -743,7 +743,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
     /// Is the joint session past empty?
     fn joint_session_past_is_empty(&self, frame_id_root: FrameId) -> bool {
         self.full_frame_tree_iter(frame_id_root)
-            .all(|frame| frame.prev.is_empty())
+            .all(|frame| frame.past.is_empty())
     }
 
     /// Create a new frame and update the internal bookkeeping.
@@ -1721,8 +1721,8 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
         // Initialize length at 1 to count for the current active entry
         let mut length = 1;
         for frame in self.full_frame_tree_iter(frame_id) {
-            length += frame.next.len();
-            length += frame.prev.len();
+            length += frame.future.len();
+            length += frame.past.len();
         }
         let _ = sender.send(length as u32);
     }
@@ -1853,7 +1853,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
 
     fn handle_remove_iframe_msg(&mut self, frame_id: FrameId) -> Vec<PipelineId> {
         let result = self.full_frame_tree_iter(frame_id)
-            .flat_map(|frame| frame.next.iter().chain(frame.prev.iter())
+            .flat_map(|frame| frame.future.iter().chain(frame.past.iter())
                       .filter_map(|entry| entry.pipeline_id)
                       .chain(once(frame.pipeline_id)))
             .collect();
@@ -1868,7 +1868,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
         };
 
         let child_pipeline_ids: Vec<PipelineId> = self.full_frame_tree_iter(frame_id)
-            .flat_map(|frame| frame.prev.iter().chain(frame.next.iter())
+            .flat_map(|frame| frame.past.iter().chain(frame.future.iter())
                       .filter_map(|entry| entry.pipeline_id)
                       .chain(once(frame.pipeline_id)))
             .collect();
@@ -1984,7 +1984,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
     }
 
     // https://html.spec.whatwg.org/multipage/#traverse-the-history
-    fn traverse_to_entry(&mut self, entry: FrameState) {
+    fn traverse_to_entry(&mut self, entry: HistoryEntry) {
         // Step 1.
         let frame_id = entry.frame_id;
         let pipeline_id = match entry.pipeline_id {
@@ -2027,28 +2027,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
         let old_pipeline_id = match self.frames.get_mut(&frame_id) {
             Some(frame) => {
                 let old_pipeline_id = frame.pipeline_id;
-                let mut curr_entry = frame.current();
-
-                if entry.instant > frame.instant {
-                    // We are traversing to the future.
-                    while let Some(next) = frame.next.pop() {
-                        frame.prev.push(curr_entry);
-                        curr_entry = next;
-                        if entry.instant <= curr_entry.instant { break; }
-                    }
-                } else if entry.instant < frame.instant {
-                    // We are traversing to the past.
-                    while let Some(prev) = frame.prev.pop() {
-                        frame.next.push(curr_entry);
-                        curr_entry = prev;
-                        if entry.instant >= curr_entry.instant { break; }
-                    }
-                }
-
-                debug_assert_eq!(entry.instant, curr_entry.instant);
-
-                frame.update_current(pipeline_id, &entry);
-
+                frame.traverse_to_entry(entry, pipeline_id);
                 old_pipeline_id
             },
             None => return warn!("no frame to traverse"),
@@ -2138,16 +2117,16 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
         let (evicted_id, new_frame, navigated, location_changed) = if let Some(mut entry) = frame_change.replace {
             debug!("Replacing pipeline in existing frame.");
             let evicted_id = entry.pipeline_id;
-            entry.replace_pipeline(frame_change.new_pipeline_id, frame_change.url.clone());
+            entry.pipeline_id = Some(frame_change.new_pipeline_id);
             self.traverse_to_entry(entry);
             (evicted_id, false, None, false)
         } else if let Some(frame) = self.frames.get_mut(&frame_change.frame_id) {
             debug!("Adding pipeline to existing frame.");
             let old_pipeline_id = frame.pipeline_id;
             frame.load(frame_change.new_pipeline_id, frame_change.url.clone());
-            let evicted_id = frame.prev.len()
+            let evicted_id = frame.past.len()
                 .checked_sub(PREFS.get("session-history.max-length").as_u64().unwrap_or(20) as usize)
-                .and_then(|index| frame.prev.get_mut(index))
+                .and_then(|index| frame.past.get_mut(index))
                 .and_then(|entry| entry.pipeline_id.take());
             (evicted_id, false, Some(old_pipeline_id), true)
         } else {
@@ -2224,7 +2203,7 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
                 new_size,
                 size_type
             ));
-            let pipelines = frame.prev.iter().chain(frame.next.iter())
+            let pipelines = frame.past.iter().chain(frame.future.iter())
                 .filter_map(|entry| entry.pipeline_id)
                 .filter_map(|pipeline_id| self.pipelines.get(&pipeline_id));
             for pipeline in pipelines {
@@ -2476,9 +2455,9 @@ impl<Message, LTF, STF> Constellation<Message, LTF, STF>
             .collect();
 
         if let Some(frame) = self.frames.get(&frame_id) {
-            pipelines_to_close.extend(frame.next.iter().filter_map(|state| state.pipeline_id));
+            pipelines_to_close.extend(frame.future.iter().filter_map(|state| state.pipeline_id));
             pipelines_to_close.push(frame.pipeline_id);
-            pipelines_to_close.extend(frame.prev.iter().filter_map(|state| state.pipeline_id));
+            pipelines_to_close.extend(frame.past.iter().filter_map(|state| state.pipeline_id));
         }
 
         for pipeline_id in pipelines_to_close {
